@@ -13,14 +13,14 @@ const COLORS = {
 };
 
 const NPCS = [
-  { id: 1, name: 'Alex', gender: 'Boy', desc: 'Tall, captain of the basketball team.' },
-  { id: 2, name: 'Brooke', gender: 'Girl', desc: 'Book club president, loves mysteries.' },
-  { id: 3, name: 'Chris', gender: 'Boy', desc: 'Gamer, always has tech advice.' },
-  { id: 4, name: 'Dani', gender: 'Girl', desc: 'Cheerful and energetic, soccer player.' },
-  { id: 5, name: 'Emma', gender: 'Girl', desc: 'Aspiring musician with a shy spirit.' },
-  { id: 6, name: 'Fiona', gender: 'Girl', desc: 'Science geek, runs the robotics club.' },
-  { id: 7, name: 'Grace', gender: 'Girl', desc: 'Drama star, loves the stage.' },
-  { id: 8, name: 'Henry', gender: 'Boy', desc: 'Artistic soul, draws everywhere.' },
+  { id: 1, name: 'Alex', gender: 'Boy', desc: 'Tall, captain of the basketball team.', personality: "confident", },
+  { id: 2, name: 'Brooke', gender: 'Girl', desc: 'Book club president, loves mysteries.', personality: "thoughtful", },
+  { id: 3, name: 'Chris', gender: 'Boy', desc: 'Gamer, always has tech advice.', personality: "quirky", },
+  { id: 4, name: 'Dani', gender: 'Girl', desc: 'Cheerful and energetic, soccer player.', personality: "energetic", },
+  { id: 5, name: 'Emma', gender: 'Girl', desc: 'Aspiring musician with a shy spirit.', personality: "shy", },
+  { id: 6, name: 'Fiona', gender: 'Girl', desc: 'Science geek, runs the robotics club.', personality: "analytical", },
+  { id: 7, name: 'Grace', gender: 'Girl', desc: 'Drama star, loves the stage.', personality: "dramatic", },
+  { id: 8, name: 'Henry', gender: 'Boy', desc: 'Artistic soul, draws everywhere.', personality: "artistic", },
 ];
 
 // Simple rooms/map layout for visualization and movement
@@ -29,6 +29,8 @@ const SCHOOL_MAP = [
   ['Gym', 'Cafeteria', 'Auditorium'],
   ['Locker Room', 'Entrance', 'Courtyard'],
 ];
+
+const MOODS = ['neutral','happy','curious','annoyed','flirty','sad','angry','excited','nervous','helpful'];
 
 const INITIAL_STATE = {
   player: {
@@ -44,8 +46,18 @@ const INITIAL_STATE = {
   narrative: [
     "Welcome to Rivertown High! As Zack, a 16-year-old student, you begin your adventure at the school's entrance. What would you like to do?",
   ],
-  npcs: NPCS.map(npc => ({ ...npc, met: false, friendship: 0 })),
+  // Now each NPC gets relationship, mood, event history, etc.
+  npcs: NPCS.map(npc => ({
+    ...npc, 
+    met: false, 
+    friendship: 0, 
+    mood: 'neutral',
+    secretsShared: [],  // for tracking what Zack/they have shared
+    lastInteractedAt: null,
+    affection: 0
+  })),
   map: SCHOOL_MAP,
+  events: [], // global narrative event history (could enable deeper memory)
 };
 
 function saveGame(state) {
@@ -59,13 +71,259 @@ function saveGame(state) {
 function loadGame() {
   try {
     const data = JSON.parse(localStorage.getItem('hsa_save'));
-    if (data?.player && data?.narrative && data?.npcs && data?.map)
+    if (
+      data?.player && 
+      data?.narrative && 
+      data?.npcs && 
+      data?.map &&
+      typeof data.events !== "undefined"
+    )
       return data;
     return null;
   } catch { return null; }
 }
 function clearSavedGame() {
   localStorage.removeItem('hsa_save');
+}
+
+// --- DIALOGUE/ACTION Definitions ---
+
+/**
+ * For extensibility: action/intent patterns (regexes), type, target, effect, and responses.
+ * Each action type: { patterns, description, resolve({actor,target,state,match}) ⇒ { text/array, updatesObj } }
+ * - Social: comfort, tease, challenge, flirt, comfort, apologize, help, group plan, argue, joke, gossip, confide, compliment, ask feelings
+ * - Dialogue: ask about event, about self/interest, share secret, invite, etc.
+ */
+const INTERACTION_DEFS = [
+  // Comfort, apologize
+  {
+    type: "comfort",
+    patterns: [/comfort (.+)/i, /hug (.+)/i, /cheer up (.+)/i],
+    intent: "offer comfort",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "There's no one by that name to comfort here." };
+      let update = {};
+      let reply = "";
+      if (target.mood === "sad" || target.mood === "annoyed") {
+        update = { friendship: target.friendship+8, mood: "happy" };
+        reply = `${target.name} gives a small smile. "Thanks, I needed that." Your friendship improves!`;
+      } else {
+        update = { friendship: target.friendship+3, mood: "happy" };
+        reply = `${target.name} looks touched. "${actor}, you're nice to have around."`;
+      }
+      return { text: reply, updates: update };
+    }
+  },
+  // Apologize
+  {
+    type: "apologize",
+    patterns: [/apologize to (.+)/i, /say sorry to (.+)/i, /i'?m sorry to (.+)/i],
+    intent: "apologize",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "No one here by that name to apologize to." };
+      let update = {};
+      let reply = "";
+      if (target.mood === "angry") {
+        update = { friendship: target.friendship+7, mood: "neutral" };
+        reply = `${target.name} sighs, "Okay, I forgive you. Let's move on."`;
+      } else {
+        update = { friendship: target.friendship+2 };
+        reply = `${target.name} nods. "No worries, ${actor}."`;
+      }
+      return { text: reply, updates: update };
+    }
+  },
+  // Flirt
+  {
+    type: "flirt",
+    patterns: [/flirt with (.+)/i, /compliment (.+)/i, /tell (.+) they're cute/i, /give (.+) a wink/i],
+    intent: "flirt",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "You don't see them here to flirt with." };
+      if (target.personality === "shy") {
+        return { text: `${target.name} blushes furiously, looking away. Maybe take it slow...`, updates: { mood: "nervous", affection: target.affection+2 } };
+      }
+      let gain = 2 + (target.mood === 'happy' ? 2 : 0);
+      let more = target.personality === "dramatic" ? "grins dramatically" : "smiles";
+      return {
+        text: `${target.name} ${more}. "Wow, smooth, ${actor}!"`,
+        updates: { affection: target.affection+gain, friendship: target.friendship+gain }
+      }
+    }
+  },
+  // Ask about feelings
+  {
+    type: "ask_feelings",
+    patterns: [/ask (.+) how (he|she|they) (feels|feeling)/i, /how are you[, ]*(.+)?/i],
+    intent: "ask feelings",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "There's no one by that name here." };
+      let moods = {
+        happy: `"I'm having a great day, ${actor}!"`,
+        sad: '"It\'s just been one of those days."',
+        annoyed: '"Something got on my nerves."',
+        excited: '"There\'s so much fun stuff happening!"',
+        nervous: '"Uh, well, some things are on my mind..."',
+        flirty: `"I feel pretty good with you here."`,
+        angry: '"I need to cool off for a bit."',
+        helpful: `"I feel like helping out!"`,
+        neutral: '"I\'m doing alright, thanks!"'
+      };
+      let line = moods[target.mood] || moods.neutral;
+      return { text: `${target.name} says: ${line}`, updates: {} };
+    }
+  },
+  // Share secret/gossip/confide
+  {
+    type: "share_secret",
+    patterns: [/tell (.+) a secret/i, /confide in (.+)/i, /share gossip with (.+)/i, /gossip with (.+)/i],
+    intent: "gossip",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "No one to share secrets with!" };
+      if (target.secretsShared.includes("zack_gossip")) {
+        return { text: `${target.name} whispers, "You've told me enough secrets for now!"` }
+      }
+      return {
+        text: `${target.name} leans in. "Ooh, do tell! I love secrets." You confide in them. You feel closer.`,
+        updates: { friendship: target.friendship+6, mood: "curious" },
+        secrets: ["zack_gossip"]
+      }
+    }
+  },
+  // Tease/Joke/Playful
+  {
+    type: "tease",
+    patterns: [/tease (.+)/i, /joke with (.+)/i, /make fun of (.+)/i],
+    intent: "tease",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "Can't tease someone who isn't here!" };
+      if (target.personality === "confident" || target.personality === "energetic") {
+        return { text: `${target.name} laughs. "Nice one, ${actor}!"`, updates: { mood: "happy", friendship: target.friendship+2 } }
+      }
+      if (target.personality === "shy" || target.mood === "nervous") {
+        return { text: `${target.name} looks a bit uncomfortable. Maybe go easier.`, updates: { mood: "annoyed", friendship: target.friendship-1 } }
+      }
+      return { text: `${target.name} smiles wryly. "Oh, I see how it is!"`, updates: { mood: "neutral" } }
+    }
+  },
+  // Challenge (to a game, dare)
+  {
+    type: "challenge",
+    patterns: [/challenge (.+) to (a )?(game|race|basketball|test|contest)/i, /dare (.+)/i],
+    intent: "challenge",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "No one to challenge here." };
+      let outcomes = [
+        `${target.name} grins, "Oh, you're on, ${actor}!"`,
+        `${target.name} looks determined. "Challenge accepted!"`,
+        `${target.name} laughs, "Maybe another time?"`
+      ];
+      let outcome = Math.random() < 0.7 ? outcomes[0] : outcomes[2];
+      let effects = Math.random() < 0.8 ?
+        { friendship: target.friendship+3, mood: "excited" } :
+        { mood: "neutral" };
+      return { text: outcome, updates: effects };
+    }
+  },
+  // Ask for help/offer help
+  {
+    type: "help",
+    patterns: [/ask (.+) for help/i, /request help from (.+)/i, /offer help to (.+)/i, /help (.+)\b/i],
+    intent: "help",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "No one here to help!" };
+      if (/offer help/i.test(match[0]) || /^help /.test(match[0])) {
+        return { text: `${target.name} smiles appreciatively. "Thanks, ${actor}! You're a lifesaver."`, updates: { friendship: target.friendship+4, mood: "happy" } };
+      }
+      return { text: `${target.name} says, "Sure! What do you need?"`, updates: { friendship: target.friendship+2, mood: "helpful" } };
+    }
+  },
+  // Argue/disagree
+  {
+    type: "argue",
+    patterns: [/argue with (.+)/i, /disagree with (.+)/i, /fight with (.+)/i, /yell at (.+)/i],
+    intent: "argue",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "No one here to argue with!" };
+      return { text: `${target.name} looks upset. Maybe you should apologize?`, updates: { mood: "angry", friendship: target.friendship-4 } };
+    }
+  },
+  // Compliment
+  {
+    type: "compliment",
+    patterns: [/compliment (.+)/i, /praise (.+)/i],
+    intent: "compliment",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "No one here by that name." };
+      return { text: `${target.name} brightens. "Thank you, ${actor}!"`, updates: { friendship: target.friendship+3, mood: "happy" } };
+    }
+  },
+  // Invite to event/group plan
+  {
+    type: "invite",
+    patterns: [/invite (.+) to (.+)/i, /ask (.+) to join/i, /want (.+) to come to (.+)/i],
+    intent: "invite",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "Can't invite someone who isn't here." };
+      return { text: `${target.name} says, "Sounds fun, I'll think about it!"`, updates: { friendship: target.friendship+2, mood: "curious" } };
+    }
+  },
+  // Ask about school events
+  {
+    type: "school_event",
+    patterns: [/ask (.+) about (the )?(dance|basketball|party|play|event|test)/i, /what's happening (at|in) (.+)/i, /any news/i],
+    intent: "school_event",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "No one is here to ask." };
+      const events = [
+        "Did you hear about the dance this Friday?",
+        "There's going to be a robotics contest soon!",
+        "The school play rehearsals are wild this year.",
+        "Basketball tryouts are after school in the gym.",
+        "I heard there's a pop quiz coming up in Math..."
+      ];
+      return { text: `${target.name} shares: "${events[Math.floor(Math.random()*events.length)]}"`, updates: {} };
+    }
+  },
+  // Default fallback for direct speech
+  {
+    type: "say",
+    patterns: [/say ['"](.*)['"] to (.+)/i, /tell (.+),? ['"](.*)['"]/i],
+    intent: "say",
+    resolve: ({ actor, target, state, match }) => {
+      if (!target) return { text: "They're not here to talk to." };
+      let said = match[1] || match[2] || '';
+      if (!said) return { text: `${target.name} asks, "What do you want to say?"` };
+      return { text: `You say "${said}" to ${target.name}. ${target.name} responds: "Interesting..."`, updates: { friendship: target.friendship+1 } }
+    }
+  }
+];
+
+/**
+ * Utility—return first intent/action that matches the input, or null, filling in parsed params.
+ */
+function matchInteraction(input, npcsHere) {
+  let lowered = input.trim().toLowerCase();
+  for (const def of INTERACTION_DEFS) {
+    for (const pat of def.patterns) {
+      const m = lowered.match(pat);
+      if (m) {
+        // Try to extract target; allow partial matches by name (must be present in npcsHere).
+        for (const npc of npcsHere) {
+          if (
+            (m[1] && npc.name.toLowerCase() === m[1].toLowerCase()) ||
+            (m[2] && npc.name.toLowerCase() === m[2].toLowerCase()) ||
+            lowered.includes(npc.name.toLowerCase())
+          ) {
+            return { ...def, match: m, target: npc } 
+          }
+        }
+        // No recognizable target, but still matches action
+        return { ...def, match: m, target: null }
+      }
+    }
+  }
+  return null;
 }
 
 // PUBLIC_INTERFACE
@@ -88,49 +346,104 @@ function App() {
   // PUBLIC_INTERFACE
   function handleCommand(command) {
     let output = '';
-    const cmd = command.trim().toLowerCase();
-    let newState = { ...gameState, narrative: [...gameState.narrative] };
+    const cmd = command.trim();
+    const raw = cmd; // preserve for narrative
+    const lowered = cmd.toLowerCase();
+    let newState = { 
+      ...gameState, 
+      narrative: [...gameState.narrative], 
+      events: [...gameState.events] 
+    };
 
     // Movement: go north/east/south/west, or just "north" etc
     for (const dir of ['north', 'south', 'east', 'west']) {
-      if (cmd === `go ${dir}` || cmd === dir) {
+      if (lowered === `go ${dir}` || lowered === dir) {
         output = tryMove(dir, newState);
         break;
       }
     }
 
-    // Look around/describe current room
-    if (/^look/.test(cmd) || /examine|describe|survey/.test(cmd)) {
+    // Look/describe current room
+    if (/^look/.test(lowered) || /examine|describe|survey/.test(lowered)) {
       output = describeLocation(newState.player.location, newState);
     }
 
     // Inventory management
-    if (/inventory|inv\b|bag|backpack|items/.test(cmd)) {
+    if (/inventory|inv\b|bag|backpack|items/.test(lowered)) {
       output = describeInventory(newState.player.inventory);
     }
 
-    // Talk/interact with NPC: "talk to Emma", "interact with Henry"
-    const talkMatch = cmd.match(/^talk to (\w+)|^interact with (\w+)/);
+    // Context: which NPCs are "here"?
+    const hereNames = newState.npcs.filter((npc, idx) =>
+      (idx % 3) === (newState.player.location[0] + newState.player.location[1]) % 3
+    );
+    // Expanded: rich interaction parser
+    if (!output && lowered.match(/talk to \w+|interact with \w+|ask .+|flirt|challenge|tease|comfort|apologize|help|gossip|confide|argue|fight|invite|compliment|praise|share|joke|hug|say |tell /)) {
+      // Try to match complex intent (modular)
+      const matched = matchInteraction(lowered, hereNames);
+      if (matched) {
+        // Upgrades: resolve the action, apply effects, narrative
+        let idx = newState.npcs.findIndex(n => n.id === (matched.target && matched.target.id));
+        let reply, changes = {}, secretUpdates = [];
+        if (matched.target && idx >= 0) {
+          // Pass in named/deref'd target: simulate NPC's mood, relation, etc.
+          let res = matched.resolve({
+            actor: newState.player.name,
+            target: newState.npcs[idx],
+            state: newState,
+            match: matched.match
+          });
+          reply = res.text;
+          // Apply modular updates to mood, friendship, secrets, etc.
+          if (res.updates) {
+            for (let k in res.updates) {
+              newState.npcs[idx][k] = res.updates[k];
+            }
+          }
+          if (res.secrets) {
+            newState.npcs[idx].secretsShared.push(...res.secrets);
+          }
+          newState.npcs[idx].met = true;
+          newState.npcs[idx].lastInteractedAt = Date.now();
+        } else {
+          // No local target? Reply with generic.
+          let res = matched.resolve({
+            actor: newState.player.name,
+            target: null,
+            state: newState,
+            match: matched.match
+          });
+          reply = res.text;
+        }
+
+        output = reply;
+      } else {
+        output = genericTalkResponse(lowered, hereNames, newState);
+      }
+    }
+
+    // Fallback classic: "talk to Emma", "interact with Henry"
+    const talkMatch = lowered.match(/^talk to (\w+)|^interact with (\w+)/);
     if (!output && talkMatch) {
       const target = (talkMatch[1] || talkMatch[2] || '').toLowerCase();
       output = interactWithNPC(target, newState);
     }
 
     // Pick up item: "pick up apple", "take lunchbox"
-    const itemMatch = cmd.match(/pick up (\w+)|take (\w+)/);
+    const itemMatch = lowered.match(/pick up (\w+)|take (\w+)/);
     if (!output && itemMatch) {
       const item = (itemMatch[1] || itemMatch[2] || '').toLowerCase();
       output = pickUpItem(item, newState);
     }
 
     // Save/load/progress
-    if (!output && /save\b/.test(cmd)) {
+    if (!output && /save\b/.test(lowered)) {
       saveGame(newState);
       setShowSaveMsg(true);
       setTimeout(() => setShowSaveMsg(false), 1500);
       output = "Your progress has been saved.";
     }
-    if (!output && /^load\b/.test(cmd)) {
+    if (!output && /^load\b/.test(lowered)) {
       const loaded = loadGame();
       if (loaded) {
         setGameState(loaded);
@@ -141,7 +454,7 @@ function App() {
         output = "No saved game found.";
       }
     }
-    if (!output && /^reset\b/.test(cmd)) {
+    if (!output && /^reset\b/.test(lowered)) {
       clearSavedGame();
       setGameState(INITIAL_STATE);
       setShowResetMsg(true);
@@ -150,12 +463,15 @@ function App() {
     }
 
     // Unrecognized
-    if (!output && cmd.length) {
-      output = `I don't understand that command. Try "look", "go north", "talk to Emma", "inventory", etc.`;
+    if (!output && lowered.length) {
+      output = `Zack deliberates, but doesn't know how to do that. Try social moves like 'comfort Emma', 'challenge Alex to a game', 'flirt with Grace', 'ask Chris for help', or just "look", "go north".`;
     }
 
-    newState.narrative.push(`> ${command}`);
+    newState.narrative.push(`> ${raw}`);
     newState.narrative.push(output);
+    // Truncate narrative to keep things tidy (optional, for demo)
+    if (newState.narrative.length > 28) newState.narrative = newState.narrative.slice(-28);
+
     setGameState(newState);
   }
 
@@ -168,7 +484,6 @@ function App() {
     const newRow = row + dRow, newCol = col + dCol;
     if (newRow < 0 || newCol < 0 || newRow >= state.map.length || newCol >= state.map[0].length)
       return "You can't go that way.";
-
     state.player.location = [newRow, newCol];
     return describeLocation([newRow, newCol], state, true);
   }
@@ -195,9 +510,9 @@ function App() {
       : "Your inventory is empty.";
   }
 
-  // Interact with an NPC if present
+  // Interact with an NPC if present (fallback API)
   function interactWithNPC(npcName, state) {
-    const hereNames = state.npcs.filter((npc, idx) => 
+    const hereNames = state.npcs.filter((npc, idx) =>
       (idx % 3) === (state.player.location[0] + state.player.location[1]) % 3
     ).map(n => n.name.toLowerCase());
     const idx = state.npcs.findIndex(n => n.name.toLowerCase() === npcName);
@@ -228,6 +543,25 @@ function App() {
       found = "You don't see that here.";
     }
     return found;
+  }
+
+  // Attempt to generate a dynamic but generic NPC response (fallback/no match).
+  function genericTalkResponse(lowered, npcsHere, state) {
+    if (npcsHere.length === 0) return "No one is here to talk to!";
+    // Pick an NPC, and have a themed fallback reply
+    const npc = npcsHere[0];
+    let phrases = [
+      `"I don't really know what you mean, but okay, ${state.player.name}!"`,
+      '"Wanna talk about something else?"',
+      `"Heh, you're funny, ${state.player.name}."`,
+      `"Cool story, bro."`,
+      `"Haha, that's random, but alright."`,
+      `"Let's do something more interesting!"`
+    ];
+    if (npc.personality === "analytical") phrases.push('"That sounds illogical, but interesting."');
+    if (npc.personality === "dramatic") phrases.push('"If only life were as poetic as your words!"');
+    if (npc.personality === "confident") phrases.push(`"Bold move! I like it."`);
+    return `${npc.name} says: ${phrases[Math.floor(Math.random()*phrases.length)]}`;
   }
 
   // Handle input submission
@@ -360,7 +694,7 @@ function CommandInput({ value, onChange, onSubmit }) {
         type="text"
         autoFocus
         className="cmd-input-box"
-        placeholder="Type your command (e.g. go north, look, talk to Emma)..."
+        placeholder="Type your command (e.g. comfort Emma, flirt with Grace, ask Chris for help)..."
         value={value}
         onChange={e => onChange(e.target.value)}
         maxLength={80}
